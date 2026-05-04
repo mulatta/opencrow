@@ -87,6 +87,7 @@ type message struct {
 	Image   string   `json:"image,omitempty"`
 	ReplyTo string   `json:"replyTo,omitempty"`
 	State   msgState `json:"state"`
+	Type    string   `json:"type,omitempty"`
 }
 
 type cmdName string
@@ -105,6 +106,7 @@ type command struct {
 	ReplyTo string  `json:"replyTo,omitempty"`
 	Path    string  `json:"path,omitempty"`
 	N       int     `json:"n,omitempty"`
+	Type    string  `json:"type,omitempty"`
 }
 
 // --- Backend implementation ---
@@ -340,6 +342,7 @@ func (b *Backend) handleSend(ctx context.Context, cmd command) {
 			Dir:     dirOut,
 			State:   stateSent,
 			ReplyTo: cmd.ReplyTo,
+			Type:    cmd.Type,
 		},
 	})
 
