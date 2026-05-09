@@ -1,0 +1,106 @@
+name: Rebase fork on upstream
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Branch to rebase after updating fork base
+        required: true
+        default: noa-workload-lifecycle
+      fork_base_branch:
+        description: Fork base branch to keep on top of upstream
+        required: true
+        default: master
+      upstream_branch:
+        description: Upstream branch to follow
+        required: true
+        default: master
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rebase-upstream-${{ github.event.inputs.target_branch || 'noa-workload-lifecycle' }}
+  cancel-in-progress: false
+
+env:
+  TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'noa-workload-lifecycle' }}
+  FORK_BASE_BRANCH: ${{ github.event.inputs.fork_base_branch || 'master' }}
+  UPSTREAM_REPO: https://github.com/pinpox/opencrow.git
+  UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || 'master' }}
+
+jobs:
+  rebase:
+    name: Rebase fork branches
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FORK_BASE_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.REBASE_TOKEN || github.token }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch branches
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream "$UPSTREAM_BRANCH"
+          git fetch origin "$FORK_BASE_BRANCH" "$TARGET_BRANCH"
+
+      - name: Rebase fork base onto upstream
+        run: |
+          set -euo pipefail
+          git checkout -B "$FORK_BASE_BRANCH" "origin/$FORK_BASE_BRANCH"
+          before=$(git rev-parse HEAD)
+          upstream_head=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
+
+          if git merge-base --is-ancestor "$upstream_head" HEAD; then
+            echo "Fork base already contains upstream $UPSTREAM_BRANCH."
+            exit 0
+          fi
+
+          git rebase "upstream/$UPSTREAM_BRANCH"
+          after=$(git rev-parse HEAD)
+
+          if [ "$before" = "$after" ]; then
+            echo "Fork base unchanged after rebase."
+            exit 0
+          fi
+
+          git push \
+            --force-with-lease="refs/heads/$FORK_BASE_BRANCH:$before" \
+            origin \
+            "HEAD:refs/heads/$FORK_BASE_BRANCH"
+
+      - name: Rebase target branch onto fork base
+        run: |
+          set -euo pipefail
+          git fetch origin "$FORK_BASE_BRANCH" "$TARGET_BRANCH"
+          git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+          before=$(git rev-parse HEAD)
+
+          if git merge-base --is-ancestor "origin/$FORK_BASE_BRANCH" HEAD; then
+            echo "Target branch already contains fork base."
+            exit 0
+          fi
+
+          git rebase --rebase-merges "origin/$FORK_BASE_BRANCH"
+          after=$(git rev-parse HEAD)
+
+          if [ "$before" = "$after" ]; then
+            echo "Target branch unchanged after rebase."
+            exit 0
+          fi
+
+          git push \
+            --force-with-lease="refs/heads/$TARGET_BRANCH:$before" \
+            origin \
+            "HEAD:refs/heads/$TARGET_BRANCH"
