@@ -22,13 +22,22 @@ graph LR
     Transport[Matrix / Nostr / Signal] -->|message| Inbox[(Inbox)]
     Heartbeat -->|timer| Inbox
     Reminders[(reminders)] -->|due| Inbox
-    Trigger["trigger.pipe"] -->|external| Inbox
+    Workloadd[(opencrow-workloadd)] -->|workload.v1 trigger| Trigger["trigger.pipe"]
+    Trigger -->|external| Inbox
     Inbox -->|dequeue| Worker -->|RPC| Pi["pi process"]
+    Worker -->|lifecycle| Workloadd
     Pi -->|response| Worker -->|reply| Transport
 ```
 
 The Go bot receives messages from the configured backend, forwards them to the
 pi process, collects the response, and sends it back.
+
+This fork also carries a thin workload lifecycle patch for
+`opencrow-workloadd`. Workload triggers may include `workload.v1` metadata. When
+the worker starts or finishes such an item, it emits best-effort lifecycle events
+to `OPENCROW_WORKLOAD_LIFECYCLE_SOCKET`; `OPENCROW_INSTANCE_ID` labels the
+emitting instance. The sidecar owns policy, permissions, dedupe, and audit;
+OpenCrow remains the executor and source of lifecycle truth.
 
 > [!WARNING]
 > There is no whitelisting, permission system, or tool filtering. Trying to bolt
