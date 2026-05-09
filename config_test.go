@@ -243,6 +243,25 @@ func TestSocketConfig_CustomValues(t *testing.T) {
 	}
 }
 
+func TestWorkloadEventConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadConfig(testEnv(map[string]string{
+		"OPENCROW_BACKEND":                    "socket",
+		"OPENCROW_WORKLOAD_LIFECYCLE_SOCKET": "/run/workload.sock",
+		"OPENCROW_INSTANCE_ID":                "noa",
+	}))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.WorkloadEvents.SocketPath != "/run/workload.sock" {
+		t.Errorf("SocketPath = %q", cfg.WorkloadEvents.SocketPath)
+	}
+	if cfg.WorkloadEvents.InstanceID != "noa" {
+		t.Errorf("InstanceID = %q", cfg.WorkloadEvents.InstanceID)
+	}
+}
+
 func TestDiscoverSkills_Symlinks(t *testing.T) {
 	t.Parallel()
 

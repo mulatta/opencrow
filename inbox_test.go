@@ -56,6 +56,40 @@ func newTestInbox(ctx context.Context, t *testing.T) *InboxStore {
 	return newTestInboxWithDB(ctx, t, newTestDB(ctx, t))
 }
 
+func TestOpenDB_MigratesInboxWorkloadColumns(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", dir+"/"+opencrowDBFile+sqliteDSNParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE inbox (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			priority INTEGER NOT NULL DEFAULT 2,
+			source TEXT NOT NULL,
+			content TEXT NOT NULL DEFAULT '',
+			reply_to TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = openDB(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	assertColumnExists(t, db, "inbox", "metadata_json")
+	assertColumnExists(t, db, "inbox", "attempt")
+}
+
 func TestInbox_PriorityOrder(t *testing.T) {
 	t.Parallel()
 
@@ -223,6 +257,29 @@ func TestInbox_Persistence(t *testing.T) {
 	}
 }
 
+func TestInbox_WorkloadMetadataPersistsThroughRequeue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	inbox := newTestInbox(ctx, t)
+	metadataJSON := `{"workload_id":"wl-1","event_id":"event-1","source":"rss","action":"triage"}`
+
+	must(t, inbox.EnqueueWithMetadata(ctx, PriorityTrigger, sourceTrigger, "workload.v1 {}", "", metadataJSON))
+	item, err := inbox.Dequeue(ctx)
+	must(t, err)
+
+	if item.MetadataJson != metadataJSON || item.Attempt != 0 {
+		t.Fatalf("item metadata = %q attempt=%d", item.MetadataJson, item.Attempt)
+	}
+	must(t, inbox.Requeue(ctx, item))
+
+	item, err = inbox.Dequeue(ctx)
+	must(t, err)
+	if item.MetadataJson != metadataJSON || item.Attempt != 1 {
+		t.Fatalf("requeued item metadata = %q attempt=%d", item.MetadataJson, item.Attempt)
+	}
+}
+
 func TestWorker_MergeUserItems(t *testing.T) {
 	t.Parallel()
 
@@ -328,6 +385,33 @@ func TestOpenDB_Pragmas(t *testing.T) {
 	if bt != 5000 {
 		t.Errorf("busy_timeout = %d, want 5000", bt)
 	}
+}
+
+func assertColumnExists(t *testing.T, db *sql.DB, table, column string) {
+	t.Helper()
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatal(err)
+		}
+		if name == column {
+			return
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("column %s.%s not found", table, column)
 }
 
 func must(t *testing.T, err error) {

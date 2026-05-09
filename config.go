@@ -20,13 +20,21 @@ const (
 )
 
 type Config struct {
-	BackendType string // backendMatrix, backendNostr, backendSignal, or backendSocket
-	Matrix      MatrixConfig
-	Nostr       NostrConfig
-	Signal      SignalConfig
-	Socket      SocketConfig
-	Pi          PiConfig
-	Heartbeat   HeartbeatConfig
+	BackendType    string // backendMatrix, backendNostr, backendSignal, or backendSocket
+	Matrix         MatrixConfig
+	Nostr          NostrConfig
+	Signal         SignalConfig
+	Socket         SocketConfig
+	Pi             PiConfig
+	Heartbeat      HeartbeatConfig
+	WorkloadEvents WorkloadEventConfig
+}
+
+// WorkloadEventConfig controls optional lifecycle emission for external
+// workload triggers. Empty SocketPath disables emission.
+type WorkloadEventConfig struct {
+	SocketPath string
+	InstanceID string
 }
 
 type SocketConfig struct {
@@ -153,6 +161,10 @@ func loadConfig(getenv func(string) string) (*Config, error) {
 		Heartbeat: HeartbeatConfig{
 			Interval: heartbeatInterval,
 			Prompt:   env.or("OPENCROW_HEARTBEAT_PROMPT", defaultHeartbeatPrompt),
+		},
+		WorkloadEvents: WorkloadEventConfig{
+			SocketPath: env.str("OPENCROW_WORKLOAD_LIFECYCLE_SOCKET"),
+			InstanceID: env.or("OPENCROW_INSTANCE_ID", defaultInstanceID()),
 		},
 	}
 
@@ -422,6 +434,14 @@ func parseNostrAllowedUsers(raw []string) (map[string]struct{}, error) {
 	}
 
 	return users, nil
+}
+
+func defaultInstanceID() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return "opencrow"
+	}
+	return hostname
 }
 
 func parseCommaSeparated(s string) []string {

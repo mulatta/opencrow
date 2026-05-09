@@ -54,6 +54,24 @@ func (s *InboxStore) Enqueue(ctx context.Context, priority int64, source, conten
 	return nil
 }
 
+// EnqueueWithMetadata inserts an item with generic external workload metadata.
+func (s *InboxStore) EnqueueWithMetadata(ctx context.Context, priority int64, source, content, replyTo, metadataJSON string) error {
+	if err := s.queries.EnqueueInboxWithMetadata(ctx, EnqueueInboxWithMetadataParams{
+		Priority:     priority,
+		Source:       source,
+		Content:      content,
+		ReplyTo:      replyTo,
+		MetadataJson: metadataJSON,
+		Attempt:      0,
+	}); err != nil {
+		return fmt.Errorf("enqueuing inbox item: %w", err)
+	}
+
+	slog.Info("inbox: enqueued", "source", source, "priority", priority)
+
+	return nil
+}
+
 // Dequeue removes and returns the highest-priority (lowest number) item.
 // Returns sql.ErrNoRows if the inbox is empty.
 func (s *InboxStore) Dequeue(ctx context.Context) (Inbox, error) {
@@ -67,11 +85,13 @@ func (s *InboxStore) Requeue(ctx context.Context, item Inbox) error {
 		return nil
 	}
 
-	if err := s.queries.EnqueueInbox(ctx, EnqueueInboxParams{
-		Priority: item.Priority,
-		Source:   item.Source,
-		Content:  item.Content,
-		ReplyTo:  item.ReplyTo,
+	if err := s.queries.EnqueueInboxWithMetadata(ctx, EnqueueInboxWithMetadataParams{
+		Priority:     item.Priority,
+		Source:       item.Source,
+		Content:      item.Content,
+		ReplyTo:      item.ReplyTo,
+		MetadataJson: item.MetadataJson,
+		Attempt:      item.Attempt + 1,
 	}); err != nil {
 		return fmt.Errorf("requeueing %s item: %w", item.Source, err)
 	}

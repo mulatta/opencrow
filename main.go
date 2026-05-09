@@ -142,11 +142,58 @@ func openDB(ctx context.Context, sessionDir string) (*sql.DB, error) {
 		return nil, fmt.Errorf("migrating schema: %w", err)
 	}
 
+	if err := migrateOpenCrowSchema(ctx, db); err != nil {
+		db.Close()
+
+		return nil, fmt.Errorf("migrating opencrow schema: %w", err)
+	}
+
 	if err := migrateLegacyOutbox(ctx, db, sessionDir); err != nil {
 		slog.Warn("failed to migrate legacy sent_messages.db", "error", err)
 	}
 
 	return db, nil
+}
+
+func migrateOpenCrowSchema(ctx context.Context, db *sql.DB) error {
+	if err := ensureColumn(ctx, db, "inbox", "metadata_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "inbox", "attempt", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureColumn(ctx context.Context, db *sql.DB, table, column, definition string) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scan %s columns: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate %s columns: %w", table, err)
+	}
+
+	if _, err := db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" "+definition); err != nil {
+		return fmt.Errorf("add %s.%s column: %w", table, column, err)
+	}
+	return nil
 }
 
 func migrateLegacyOutbox(ctx context.Context, db *sql.DB, sessionDir string) error {
@@ -206,6 +253,7 @@ func wireServices(ctx context.Context, cfg *Config, db *sql.DB, inbox *InboxStor
 	app = NewApp(b, worker, inbox, db)
 	worker.SetApp(app)
 	worker.SetBackend(b)
+	worker.SetLifecycleEmitter(NewWorkloadLifecycleEmitter(cfg.WorkloadEvents))
 
 	worker.piCfg.SystemPrompt = app.systemPrompt(worker.piCfg.SystemPrompt)
 

@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS inbox (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     priority   INTEGER NOT NULL DEFAULT 2,  -- 0=user, 1=trigger, 2=heartbeat
     source     TEXT    NOT NULL,             -- "user", "trigger", "heartbeat"
-    content    TEXT    NOT NULL DEFAULT '',
-    reply_to   TEXT    NOT NULL DEFAULT '',  -- backend message ID to reply to
-    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    content       TEXT    NOT NULL DEFAULT '',
+    reply_to      TEXT    NOT NULL DEFAULT '',  -- backend message ID to reply to
+    metadata_json TEXT    NOT NULL DEFAULT '',  -- generic workload metadata for external triggers
+    attempt       INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
