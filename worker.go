@@ -38,15 +38,17 @@ type Worker struct {
 	// config
 	hbPrompt      string
 	triggerPrompt string
+	lifecycle     *WorkloadLifecycleEmitter
 
-	// mu protects pi, lastUse, compactResult, currentPriority, currentCancel, freshStart.
-	mu              sync.Mutex
-	pi              *PiProcess
-	freshStart      bool // next ensurePi spawns without --continue
-	lastUse         time.Time
-	currentPriority int64
-	currentCancel   context.CancelFunc
-	compactResult   chan compactOutcome
+	// mu protects pi, lastUse, compactResult, currentPriority, currentCancel, currentCancelReason, freshStart.
+	mu                  sync.Mutex
+	pi                  *PiProcess
+	freshStart          bool // next ensurePi spawns without --continue
+	lastUse             time.Time
+	currentPriority     int64
+	currentCancel       context.CancelFunc
+	currentCancelReason string
+	compactResult       chan compactOutcome
 
 	// wake is signalled (non-blocking) on every Notify call so the
 	// worker can poll the DB for the highest-priority item.
@@ -86,6 +88,9 @@ func (w *Worker) SetApp(app *App) { w.app = app }
 // SetBackend wires the backend reference (phase 2 of init).
 func (w *Worker) SetBackend(be Backend) { w.be = be }
 
+// SetLifecycleEmitter wires the optional workload lifecycle sink.
+func (w *Worker) SetLifecycleEmitter(emitter *WorkloadLifecycleEmitter) { w.lifecycle = emitter }
+
 // Notify wakes the worker loop. Called after enqueueing an item.
 // If the new item has strictly higher priority than the running one,
 // the running operation is preempted.
@@ -96,6 +101,7 @@ func (w *Worker) Notify(priority int64) {
 			"new_priority", priority,
 			"current_priority", w.currentPriority,
 		)
+		w.currentCancelReason = "preempted"
 		w.currentCancel()
 	}
 	w.mu.Unlock()
@@ -129,6 +135,9 @@ func (w *Worker) Run(ctx context.Context) {
 func (w *Worker) Abort() bool {
 	w.mu.Lock()
 	cancel := w.currentCancel
+	if cancel != nil {
+		w.currentCancelReason = "aborted"
+	}
 	w.mu.Unlock()
 
 	if cancel != nil {
@@ -319,12 +328,14 @@ func (w *Worker) processItem(ctx context.Context, item Inbox) bool {
 	w.mu.Lock()
 	w.currentPriority = item.Priority
 	w.currentCancel = cancel
+	w.currentCancelReason = ""
 	w.mu.Unlock()
 
 	defer func() {
 		w.mu.Lock()
 		w.currentPriority = -1
 		w.currentCancel = nil
+		w.currentCancelReason = ""
 		w.mu.Unlock()
 	}()
 
@@ -350,6 +361,11 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 		return w.handleNoRoomID(item) //nolint:contextcheck // requeue uses context.Background intentionally
 	}
 
+	workloadMetadata, hasWorkloadMetadata := parseInboxWorkloadMetadata(item.MetadataJson)
+	if hasWorkloadMetadata {
+		w.lifecycle.Emit(ctx, item, workloadMetadata, "running", map[string]any{"priority": item.Priority})
+	}
+
 	w.be.SetTyping(ctx, convID, true)
 	defer w.be.SetTyping(context.Background(), convID, false) //nolint:contextcheck // must clear typing even after preemption
 
@@ -369,6 +385,16 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	pi, reply, err := w.sendWithRetry(ctx, prompt, onDelta)
 	if err != nil {
 		killPi := pi != nil
+		if hasWorkloadMetadata {
+			status := "failed"
+			if wasPreempted(ctx, err) {
+				status = "preempted"
+				if w.currentCancellationReason() == "aborted" {
+					status = "aborted"
+				}
+			}
+			w.lifecycle.Emit(ctx, item, workloadMetadata, status, map[string]any{"error_kind": "pi", "error": err.Error()})
+		}
 
 		return w.handlePiError(ctx, item, convID, "pi prompt failed", err, killPi)
 	}
@@ -382,6 +408,9 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	}
 
 	if shouldSuppressReply(reply, item.Source) {
+		if hasWorkloadMetadata {
+			w.lifecycle.Emit(ctx, item, workloadMetadata, "completed", map[string]any{"reply_suppressed": true})
+		}
 		return false
 	}
 
@@ -390,6 +419,9 @@ func (w *Worker) processPrompt(ctx context.Context, item Inbox) bool {
 	}
 
 	w.app.sendReplyWithFiles(ctx, convID, reply, item.ReplyTo)
+	if hasWorkloadMetadata {
+		w.lifecycle.Emit(ctx, item, workloadMetadata, "completed", map[string]any{"reply_suppressed": false})
+	}
 
 	return false
 }
@@ -436,6 +468,10 @@ func (w *Worker) handleNoRoomID(item Inbox) bool {
 // user. Returns true if drainOnce should stop.
 func (w *Worker) handlePiError(ctx context.Context, item Inbox, convID, label string, err error, killPi bool) bool {
 	if wasPreempted(ctx, err) {
+		if w.currentCancellationReason() == "aborted" {
+			slog.Info("worker: aborted", "source", item.Source)
+			return false
+		}
 		return w.requeuePreempted(item) //nolint:contextcheck // item ctx is cancelled; requeue uses background ctx
 	}
 
@@ -454,6 +490,12 @@ func (w *Worker) handlePiError(ctx context.Context, item Inbox, convID, label st
 
 // requeuePreempted re-inserts a preempted item (except heartbeats).
 // Returns true so drainOnce stops and re-enters via the new Notify.
+func (w *Worker) currentCancellationReason() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.currentCancelReason
+}
+
 func (w *Worker) requeuePreempted(item Inbox) bool {
 	slog.Info("worker: preempted", "source", item.Source)
 

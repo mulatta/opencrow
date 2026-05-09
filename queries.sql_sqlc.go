@@ -77,7 +77,7 @@ WHERE id = (
     ORDER BY priority ASC, id ASC
     LIMIT 1
 )
-RETURNING id, priority, source, content, reply_to, created_at
+RETURNING id, priority, source, content, reply_to, metadata_json, attempt, created_at
 `
 
 func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
@@ -89,6 +89,8 @@ func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
 		&i.Source,
 		&i.Content,
 		&i.ReplyTo,
+		&i.MetadataJson,
+		&i.Attempt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -97,7 +99,7 @@ func (q *Queries) DequeueInbox(ctx context.Context) (Inbox, error) {
 const dequeueUserItems = `-- name: DequeueUserItems :many
 DELETE FROM inbox
 WHERE source = 'user'
-RETURNING id, priority, source, content, reply_to, created_at
+RETURNING id, priority, source, content, reply_to, metadata_json, attempt, created_at
 `
 
 func (q *Queries) DequeueUserItems(ctx context.Context) ([]Inbox, error) {
@@ -115,6 +117,8 @@ func (q *Queries) DequeueUserItems(ctx context.Context) ([]Inbox, error) {
 			&i.Source,
 			&i.Content,
 			&i.ReplyTo,
+			&i.MetadataJson,
+			&i.Attempt,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -193,6 +197,32 @@ func (q *Queries) EnqueueInbox(ctx context.Context, arg EnqueueInboxParams) erro
 	return err
 }
 
+const enqueueInboxWithMetadata = `-- name: EnqueueInboxWithMetadata :exec
+INSERT INTO inbox (priority, source, content, reply_to, metadata_json, attempt)
+VALUES (?, ?, ?, ?, ?, ?)
+`
+
+type EnqueueInboxWithMetadataParams struct {
+	Priority     int64
+	Source       string
+	Content      string
+	ReplyTo      string
+	MetadataJson string
+	Attempt      int64
+}
+
+func (q *Queries) EnqueueInboxWithMetadata(ctx context.Context, arg EnqueueInboxWithMetadataParams) error {
+	_, err := q.db.ExecContext(ctx, enqueueInboxWithMetadata,
+		arg.Priority,
+		arg.Source,
+		arg.Content,
+		arg.ReplyTo,
+		arg.MetadataJson,
+		arg.Attempt,
+	)
+	return err
+}
+
 const getOutbox = `-- name: GetOutbox :one
 SELECT text FROM sent_messages
 WHERE conversation_id = ? AND message_id = ?
@@ -225,7 +255,7 @@ func (q *Queries) InsertReminder(ctx context.Context, arg InsertReminderParams) 
 }
 
 const peekInbox = `-- name: PeekInbox :one
-SELECT id, priority, source, content, reply_to, created_at
+SELECT id, priority, source, content, reply_to, metadata_json, attempt, created_at
 FROM inbox
 ORDER BY priority ASC, id ASC
 LIMIT 1
@@ -240,6 +270,8 @@ func (q *Queries) PeekInbox(ctx context.Context) (Inbox, error) {
 		&i.Source,
 		&i.Content,
 		&i.ReplyTo,
+		&i.MetadataJson,
+		&i.Attempt,
 		&i.CreatedAt,
 	)
 	return i, err

@@ -23,7 +23,7 @@ func TestTriggerPipeReader_EnqueuesLines(t *testing.T) {
 
 	pipePath := TriggerPipePath(dir)
 	waitForFIFO(t, pipePath)
-	writeToPipe(t, pipePath, "first trigger\nsecond trigger\n")
+	writeToPipe(t, pipePath, "first trigger\nworkload.v1 {\"workload_id\":\"wl-1\",\"event_id\":\"event-1\",\"source\":\"rss\",\"action\":\"triage\"}\n")
 	waitForInboxCount(ctx, t, inbox, 2)
 
 	item1, err := inbox.Dequeue(ctx)
@@ -48,8 +48,12 @@ func TestTriggerPipeReader_EnqueuesLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if item2.Content != "second trigger" {
-		t.Errorf("item2.Content = %q, want %q", item2.Content, "second trigger")
+	if item2.Content == "" || item2.MetadataJson == "" {
+		t.Errorf("item2 = %#v, want workload metadata", item2)
+	}
+	meta, ok := parseInboxWorkloadMetadata(item2.MetadataJson)
+	if !ok || meta.WorkloadID != "wl-1" {
+		t.Errorf("metadata = %#v ok=%v", meta, ok)
 	}
 }
 

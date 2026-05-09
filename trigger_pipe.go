@@ -55,7 +55,16 @@ func triggerReadLoop(ctx context.Context, w *Worker, pipePath string) {
 
 		slog.Info("trigger: received", "content", line)
 
-		if err := w.inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, line, ""); err != nil {
+		metadataJSON, hasMetadata, err := parseWorkloadTriggerMetadata(line)
+		if err != nil {
+			slog.Warn("trigger: invalid workload metadata, enqueueing as plain trigger", "error", err)
+		}
+		if hasMetadata {
+			err = w.inbox.EnqueueWithMetadata(ctx, PriorityTrigger, sourceTrigger, line, "", metadataJSON)
+		} else {
+			err = w.inbox.Enqueue(ctx, PriorityTrigger, sourceTrigger, line, "")
+		}
+		if err != nil {
 			slog.Error("trigger: failed to enqueue", "error", err)
 
 			continue
